@@ -8,11 +8,25 @@
 #include <linux/slab.h> // For kmalloc and kfree.
 #include <linux/kfifo.h>
 
-#define MC_DEVICE_FILE  "morse_code"
+#define MC_DEVICE_FILE  "morse-code"
 #define LOG_PREFIX "morse_code_driver:"
 #define ALL_WHITESPACE -1
+#define MC_FIFO_MAX_SIZE 512
 
+/// Return the number of elements in the array x.
 #define NUM_ELEMS(x) sizeof((x)) / sizeof((x)[0])
+
+/// Return 1 if ch is a letter and 0 otherwise.
+#define IS_LETTER(ch) (('A' <= (ch) && (ch) <= 'Z') || ('a' <= (ch) && (ch) <= 'z'))
+
+/// Returns 1 if ch is a char that's translateable into morse code and 0 otherwise.
+#define IS_VALID_CHAR(ch) (IS_LETTER((ch)) || (ch) == ' ')
+
+// This macro assumes that IS_LETTER(ch) == 1
+#define TO_LOWERCASE(ch) (((ch) >= 'a') ? (ch) : (ch) + 'a' - 'A');
+
+// This macro assumes that ch is a lowercase letter.
+#define MORSE_BITS_INDEX(ch) ((ch) - 'a')
 
 // Morse Code Encodings (from http://en.wikipedia.org/wiki/Morse_code)
 //   Encoding created by Brian Fraser. Released under GPL.
@@ -37,7 +51,7 @@
 // Between characters, must have 3-dot times (total) of off (0's) (not encoded here)
 // Between words, must have 7-dot times (total) of off (0's) (not encoded here).
 //
-static unsigned short morsecode_codes[] = {
+static unsigned short morse_codes[] = {
 		0xB800,	// A 1011 1
 		0xEA80,	// B 1110 1010 1
 		0xEBA0,	// C 1110 1011 101
@@ -73,7 +87,7 @@ static char whitespaces[] = {
 	'\n'
 };
 
-static DECLARE_KFIFO(mc_fifo, char, 128);
+static DECLARE_KFIFO(mc_fifo, char, MC_FIFO_MAX_SIZE);
 
 static int to_morse(const char* src, int len);
 
@@ -172,6 +186,7 @@ static void strip_whitespace(const char* src, int len, int* out_first, int* out_
 	*out_last = last;
 }
 
+/// Print the ASCII character codes for each character in src.
 static void print_ascii(const char* src, int len)
 {
 	int i;
@@ -180,6 +195,7 @@ static void print_ascii(const char* src, int len)
 		printk(KERN_DEBUG "%s %d\n", LOG_PREFIX, (int) src[i]);
 	}
 }
+
 
 /**
  * Translate from ASCII to morse code and place result in mc_fifo. Returns 0 if no characters were processed due to
@@ -200,7 +216,7 @@ static int to_morse(const char* src, int len)
 		return 0;
 	}
 
-	// Print src (need to add null character first).
+	// Print src.
 	null_termed_src = kmalloc(len + 1, GFP_KERNEL);
 	if (null_termed_src == NULL) {
 		printk(KERN_WARNING "%s WARNING: kmalloc failed.\n", LOG_PREFIX);
@@ -239,9 +255,28 @@ static int to_morse(const char* src, int len)
 	}
 
 	// Translate the substring into morse code. Place each translated character onto mc_fifo.
-	// for (i = first; i <= last; i++) {
-
-	// }
+	for (i = first; i <= last; i++) {
+		char ch = src[i];
+		unsigned short morse_bits;
+		int k;
+		printk(KERN_DEBUG "%s ch = %c.\n", LOG_PREFIX, ch);
+		if (IS_VALID_CHAR(ch)) {
+			if (IS_LETTER(ch)) {
+				ch = TO_LOWERCASE(ch);
+				printk(KERN_DEBUG "%s TO_LOWERCASE(ch) = %c.\n", LOG_PREFIX, ch);
+				morse_bits = morse_codes[MORSE_BITS_INDEX(ch)];
+				printk(KERN_DEBUG "%s morse_bits = 0x%x.\n", LOG_PREFIX, morse_bits);
+				for (k = sizeof(morse_bits) * 8 - 1; k >= 0; k--) {
+					unsigned char bit = ((morse_bits & (1 << k)) >> k);
+					printk(KERN_DEBUG "%s bit #%d = %d.\n", LOG_PREFIX, k, bit);
+				}
+			}
+			else {
+				// ch is a space.
+				// TODO: Translate to morse.
+			}
+		}
+	}
 
 	return len;
 }
