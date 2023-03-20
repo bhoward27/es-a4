@@ -13,6 +13,12 @@
 #define ALL_WHITESPACE -1
 #define MC_FIFO_MAX_SIZE 512
 
+#define DOT_TIME_MS 200
+#define DASH_TIME_MS (3 * DOT_TIME_MS)
+#define DOT_DASH_SEP_TIME_MS DOT_TIME_MS
+#define LETTER_SEP_TIME_MS DASH_TIME_MS
+#define WORD_SEP_TIME_MS (7 * DOT_TIME_MS)
+
 /// Return the number of elements in the array x.
 #define NUM_ELEMS(x) sizeof((x)) / sizeof((x)[0])
 
@@ -201,22 +207,36 @@ static void print_ascii(const char* src, int len)
 	}
 }
 
-static void put_dot(void)
+static void put_dot(int is_first)
 {
 	printk(KERN_DEBUG "%s put_dot().\n", LOG_PREFIX);
+	if (!is_first) {
+		// TODO: LED off.
+		msleep(DOT_DASH_SEP_TIME_MS);
+	}
 	kfifo_put(&mc_fifo, '.');
+	// TODO: LED on.
+	msleep(DOT_TIME_MS);
 }
 
-static void put_dash(void)
+static void put_dash(int is_first)
 {
 	printk(KERN_DEBUG "%s put_dash().\n", LOG_PREFIX);
+	if (!is_first) {
+		// TODO: LED off.
+		msleep(DOT_DASH_SEP_TIME_MS);
+	}
 	kfifo_put(&mc_fifo, '-');
+	// TODO: LED on.
+	msleep(DASH_TIME_MS);
 }
 
 static void put_space(void)
 {
 	printk(KERN_DEBUG "%s put_space().\n", LOG_PREFIX);
 	kfifo_put(&mc_fifo, ' ');
+	// TODO: LED off.
+	msleep(LETTER_SEP_TIME_MS);
 }
 
 static void put_word_sep(void)
@@ -226,11 +246,17 @@ static void put_word_sep(void)
 	for (i = 0; i < 2; i++) {
 		kfifo_put(&mc_fifo, ' ');
 	}
+	// TODO: LED off.
+	msleep(WORD_SEP_TIME_MS);
 }
 
-static void put_newline(void)
+static void put_newline(int is_first)
 {
 	printk(KERN_DEBUG "%s put_newline().\n", LOG_PREFIX);
+	if (!is_first) {
+		// TODO: LED off.
+		msleep(DOT_DASH_SEP_TIME_MS);
+	}
 	kfifo_put(&mc_fifo, '\n');
 }
 
@@ -326,10 +352,10 @@ static int to_morse(const char* src, int len)
 							}
 							break;
 						case 1:
-							put_dot();
+							put_dot((i == first));
 							break;
 						case 3:
-							put_dash();
+							put_dash((i == first));
 							break;
 						default:
 							printk(KERN_WARNING "%s WARNING: Invalid morse code 0x%x for character '%c'.\n",
@@ -347,7 +373,7 @@ static int to_morse(const char* src, int len)
 			put_word_sep();
 		}
 		if (i == last) {
-			put_newline();
+			put_newline((i == first));
 		}
 	}
 
