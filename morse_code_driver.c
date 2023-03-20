@@ -19,9 +19,6 @@
 /// Return 1 if ch is a letter and 0 otherwise.
 #define IS_LETTER(ch) (('A' <= (ch) && (ch) <= 'Z') || ('a' <= (ch) && (ch) <= 'z'))
 
-/// Returns 1 if ch is a char that's translateable into morse code and 0 otherwise.
-#define IS_VALID_CHAR(ch) (IS_LETTER((ch)) || (ch) == ' ')
-
 // This macro assumes that IS_LETTER(ch) == 1
 #define TO_LOWERCASE(ch) (((ch) >= 'a') ? (ch) : (ch) + 'a' - 'A');
 
@@ -108,8 +105,16 @@ static int mc_close(struct inode *inode, struct file *file)
 
 static ssize_t mc_read(struct file *file, char *buff, size_t count, loff_t *ppos)
 {
+	int res;
+	int num_bytes_copied = 0;
+
 	printk(KERN_DEBUG "morse_code_driver: In mc_read()\n");
-	return 0;  // # bytes actually read.
+
+	res = kfifo_to_user(&mc_fifo, buff, count, &num_bytes_copied);
+
+	if (res == -EFAULT) return -EFAULT;
+
+	return num_bytes_copied;
 }
 
 static ssize_t mc_write(struct file *file, const char *buff, size_t count, loff_t *ppos)
@@ -196,6 +201,38 @@ static void print_ascii(const char* src, int len)
 	}
 }
 
+static void put_dot(void)
+{
+	printk(KERN_DEBUG "%s put_dot().\n", LOG_PREFIX);
+	kfifo_put(&mc_fifo, '.');
+}
+
+static void put_dash(void)
+{
+	printk(KERN_DEBUG "%s put_dash().\n", LOG_PREFIX);
+	kfifo_put(&mc_fifo, '-');
+}
+
+static void put_space(void)
+{
+	printk(KERN_DEBUG "%s put_space().\n", LOG_PREFIX);
+	kfifo_put(&mc_fifo, ' ');
+}
+
+static void put_word_sep(void)
+{
+	int i;
+	printk(KERN_DEBUG "%s put_word_sep().\n", LOG_PREFIX);
+	for (i = 0; i < 2; i++) {
+		kfifo_put(&mc_fifo, ' ');
+	}
+}
+
+static void put_newline(void)
+{
+	printk(KERN_DEBUG "%s put_newline().\n", LOG_PREFIX);
+	kfifo_put(&mc_fifo, '\n');
+}
 
 /**
  * Translate from ASCII to morse code and place result in mc_fifo. Returns 0 if no characters were processed due to
@@ -258,23 +295,59 @@ static int to_morse(const char* src, int len)
 	for (i = first; i <= last; i++) {
 		char ch = src[i];
 		unsigned short morse_bits;
-		int k;
+		char k;
+		char num_consecutive_ones;
+		char num_consecutive_zeros;
 		printk(KERN_DEBUG "%s ch = %c.\n", LOG_PREFIX, ch);
-		if (IS_VALID_CHAR(ch)) {
-			if (IS_LETTER(ch)) {
-				ch = TO_LOWERCASE(ch);
-				printk(KERN_DEBUG "%s TO_LOWERCASE(ch) = %c.\n", LOG_PREFIX, ch);
-				morse_bits = morse_codes[MORSE_BITS_INDEX(ch)];
-				printk(KERN_DEBUG "%s morse_bits = 0x%x.\n", LOG_PREFIX, morse_bits);
-				for (k = sizeof(morse_bits) * 8 - 1; k >= 0; k--) {
-					unsigned char bit = ((morse_bits & (1 << k)) >> k);
-					printk(KERN_DEBUG "%s bit #%d = %d.\n", LOG_PREFIX, k, bit);
+		if (IS_LETTER(ch)){
+			ch = TO_LOWERCASE(ch);
+			printk(KERN_DEBUG "%s TO_LOWERCASE(ch) = %c.\n", LOG_PREFIX, ch);
+			morse_bits = morse_codes[MORSE_BITS_INDEX(ch)];
+			num_consecutive_ones = 0;
+			num_consecutive_zeros = 0;
+			printk(KERN_DEBUG "%s morse_bits = 0x%x.\n", LOG_PREFIX, morse_bits);
+			for (k = sizeof(morse_bits) * 8 - 1; k >= 0; k--) {
+				unsigned char bit = ((morse_bits & (1 << k)) >> k);
+				printk(KERN_DEBUG "%s bit #%d = %d.\n", LOG_PREFIX, k, bit);
+				if (bit == 1) {
+					num_consecutive_ones++;
+					num_consecutive_zeros = 0;
+				}
+				else {
+					switch (num_consecutive_ones) {
+						case 0:
+							// Assumed to be part of trailing sequence of zeros.
+							num_consecutive_zeros++;
+							if (num_consecutive_zeros >= 2) {
+								// We've reached the end of the code.
+								if (i != last) {
+									put_space();
+								}
+							}
+							break;
+						case 1:
+							put_dot();
+							break;
+						case 3:
+							put_dash();
+							break;
+						default:
+							printk(KERN_WARNING "%s WARNING: Invalid morse code 0x%x for character '%c'.\n",
+								   LOG_PREFIX,
+								   morse_bits,
+								   ch);
+							break;
+					}
+					if (num_consecutive_zeros >= 2) break;
+					num_consecutive_ones = 0;
 				}
 			}
-			else {
-				// ch is a space.
-				// TODO: Translate to morse.
-			}
+		}
+		else if (ch == ' ') {
+			put_word_sep();
+		}
+		if (i == last) {
+			put_newline();
 		}
 	}
 
