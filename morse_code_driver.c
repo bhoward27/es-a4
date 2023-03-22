@@ -7,6 +7,7 @@
 #include <linux/uaccess.h>
 #include <linux/slab.h> // For kmalloc and kfree.
 #include <linux/kfifo.h>
+#include <linux/leds.h>
 
 #define MC_DEVICE_FILE  "morse-code"
 #define LOG_PREFIX "morse_code_driver:"
@@ -17,13 +18,17 @@
 #define DASH_TIME_MS (3 * DOT_TIME_MS)
 #define DOT_DASH_SEP_TIME_MS DOT_TIME_MS
 #define LETTER_SEP_TIME_MS DASH_TIME_MS
-#define WORD_SEP_TIME_MS (7 * DOT_TIME_MS)
+
+// We know that a letter seperator will always precede a word separator, so just add onto that sleep time.
+#define WORD_SEP_TIME_MS (7 * DOT_TIME_MS - DASH_TIME_MS)
 
 /// Return the number of elements in the array x.
-#define NUM_ELEMS(x) sizeof((x)) / sizeof((x)[0])
+#define NUM_ELEMS(x) (sizeof((x)) / sizeof((x)[0]))
 
 /// Return 1 if ch is a letter and 0 otherwise.
 #define IS_LETTER(ch) (('A' <= (ch) && (ch) <= 'Z') || ('a' <= (ch) && (ch) <= 'z'))
+
+#define IS_WHITESPACE(ch) ((ch) == ' ' || (ch) == '\n' || (ch) == '\r' || (ch) == '\t')
 
 // This macro assumes that IS_LETTER(ch) == 1
 #define TO_LOWERCASE(ch) (((ch) >= 'a') ? (ch) : (ch) + 'a' - 'A');
@@ -91,6 +96,7 @@ static char whitespaces[] = {
 };
 
 static DECLARE_KFIFO(mc_fifo, char, MC_FIFO_MAX_SIZE);
+DEFINE_LED_TRIGGER(led_trigger);
 
 static int to_morse(const char* src, int len);
 
@@ -207,56 +213,77 @@ static void print_ascii(const char* src, int len)
 	}
 }
 
+static void led_on(void)
+{
+	led_trigger_event(led_trigger, LED_FULL);
+}
+
+static void led_off(void)
+{
+	led_trigger_event(led_trigger, LED_OFF);
+}
+
 static void put_dot(int is_first)
 {
+	unsigned int time = 0;
 	printk(KERN_DEBUG "%s put_dot().\n", LOG_PREFIX);
 	if (!is_first) {
-		// TODO: LED off.
+		led_off();
 		msleep(DOT_DASH_SEP_TIME_MS);
+		time += DOT_DASH_SEP_TIME_MS;
 	}
 	kfifo_put(&mc_fifo, '.');
-	// TODO: LED on.
+	led_on();
 	msleep(DOT_TIME_MS);
+	time += DOT_TIME_MS;
+	printk(KERN_DEBUG "%s Slept for %d ms.\n", LOG_PREFIX, time);
 }
 
 static void put_dash(int is_first)
 {
+	unsigned int time = 0;
 	printk(KERN_DEBUG "%s put_dash().\n", LOG_PREFIX);
 	if (!is_first) {
-		// TODO: LED off.
+		led_off();
 		msleep(DOT_DASH_SEP_TIME_MS);
+		time += DOT_DASH_SEP_TIME_MS;
 	}
 	kfifo_put(&mc_fifo, '-');
-	// TODO: LED on.
+	led_on();
 	msleep(DASH_TIME_MS);
+	time += DASH_TIME_MS;
+	printk(KERN_DEBUG "%s Slept for %d ms.\n", LOG_PREFIX, time);
 }
 
 static void put_space(void)
 {
+	unsigned int time = 0;
 	printk(KERN_DEBUG "%s put_space().\n", LOG_PREFIX);
 	kfifo_put(&mc_fifo, ' ');
-	// TODO: LED off.
+	led_off();
 	msleep(LETTER_SEP_TIME_MS);
+	time += LETTER_SEP_TIME_MS;
+	printk(KERN_DEBUG "%s Slept for %d ms.\n", LOG_PREFIX, time);
 }
 
 static void put_word_sep(void)
 {
+	unsigned int time = 0;
 	int i;
 	printk(KERN_DEBUG "%s put_word_sep().\n", LOG_PREFIX);
 	for (i = 0; i < 2; i++) {
 		kfifo_put(&mc_fifo, ' ');
 	}
-	// TODO: LED off.
+	led_off();
 	msleep(WORD_SEP_TIME_MS);
+	time += WORD_SEP_TIME_MS;
+	printk(KERN_DEBUG "%s Slept for %d ms.\n", LOG_PREFIX, time);
 }
 
-static void put_newline(int is_first)
+static void put_newline(void)
 {
 	printk(KERN_DEBUG "%s put_newline().\n", LOG_PREFIX);
-	if (!is_first) {
-		// TODO: LED off.
-		msleep(DOT_DASH_SEP_TIME_MS);
-	}
+	led_off();
 	kfifo_put(&mc_fifo, '\n');
 }
 
@@ -274,6 +301,7 @@ static int to_morse(const char* src, int len)
 	char* null_termed_src = NULL;
 	char* substring = NULL;
 	size_t subsize = 0;
+	short num_consecutive_whitespaces = 0;
 	if (len <= 0) {
 		printk(KERN_ERR "%s ERROR: Bad argument len == %d.\n", LOG_PREFIX, len);
 		return 0;
@@ -317,7 +345,7 @@ static int to_morse(const char* src, int len)
 		kfree(substring);
 	}
 
-	// Translate the substring into morse code. Place each translated character onto mc_fifo.
+	// Translate the substring into morse code. Place each translated character onto mc_fifo and flash LED.
 	for (i = first; i <= last; i++) {
 		char ch = src[i];
 		unsigned short morse_bits;
@@ -326,6 +354,7 @@ static int to_morse(const char* src, int len)
 		char num_consecutive_zeros;
 		printk(KERN_DEBUG "%s ch = %c.\n", LOG_PREFIX, ch);
 		if (IS_LETTER(ch)){
+			num_consecutive_whitespaces = 0;
 			ch = TO_LOWERCASE(ch);
 			printk(KERN_DEBUG "%s TO_LOWERCASE(ch) = %c.\n", LOG_PREFIX, ch);
 			morse_bits = morse_codes[MORSE_BITS_INDEX(ch)];
@@ -344,18 +373,23 @@ static int to_morse(const char* src, int len)
 						case 0:
 							// Assumed to be part of trailing sequence of zeros.
 							num_consecutive_zeros++;
+
+							// We've reached the end of the code for this letter.
 							if (num_consecutive_zeros >= 2) {
-								// We've reached the end of the code.
 								if (i != last) {
 									put_space();
 								}
 							}
 							break;
 						case 1:
-							put_dot((i == first));
+							put_dot((i == first && k == sizeof(morse_bits) * 8 - 2) ||
+									(IS_LETTER(src[i - 1]) && k == sizeof(morse_bits) * 8 - 2) ||
+									(IS_WHITESPACE(src[i - 1]) && k == sizeof(morse_bits) * 8 - 2));
 							break;
 						case 3:
-							put_dash((i == first));
+							put_dash((i == first && k == sizeof(morse_bits) * 8 - 4) ||
+									 (IS_LETTER(src[i - 1]) && k == sizeof(morse_bits) * 8 - 4) ||
+									 (IS_WHITESPACE(src[i - 1]) && k == sizeof(morse_bits) * 8 - 4));
 							break;
 						default:
 							printk(KERN_WARNING "%s WARNING: Invalid morse code 0x%x for character '%c'.\n",
@@ -369,23 +403,21 @@ static int to_morse(const char* src, int len)
 				}
 			}
 		}
-		else if (ch == ' ') {
-			put_word_sep();
+		else if (IS_WHITESPACE(ch)) {
+			num_consecutive_whitespaces++;
+			if (num_consecutive_whitespaces == 1) {
+				put_word_sep();
+			}
 		}
-		if (i == last) {
-			put_newline((i == first));
+		// TODO: This condition means that if the last character is not a letter, no newline will be placed, which is
+		// not correct.
+		if ((i == last) && (IS_LETTER(ch) || IS_WHITESPACE(ch))) {
+			put_newline();
 		}
 	}
 
 	return len;
 }
-
-// TODO: I think this is unneeded.
-// static long mc_unlocked_ioctl (struct file *file, unsigned int cmd, unsigned long arg)
-// {
-// 	printk(KERN_DEBUG "morse_code_driver: In mc_unlocked_ioctl()\n");
-// 	return 0;  // Success
-// }
 
 /******************************************************
  * Misc support
@@ -411,12 +443,25 @@ static struct miscdevice mc_miscdevice = {
 /******************************************************
  * Driver initialization and exit:
  ******************************************************/
+static void led_register(void)
+{
+	// Setup the trigger's name:
+	led_trigger_register_simple("morse-code", &led_trigger);
+}
+
+static void led_unregister(void)
+{
+	// Cleanup
+	led_trigger_unregister_simple(led_trigger);
+}
+
 static int __init morse_code_driver_init(void)
 {
 	int res;
     printk(KERN_DEBUG "----> morse_code_driver_init() -- '/dev/%s'.\n", MC_DEVICE_FILE);
 	res = misc_register(&mc_miscdevice);
 	INIT_KFIFO(mc_fifo);
+	led_register();
 
 	return res;
 }
@@ -425,6 +470,7 @@ static void __exit morse_code_driver_exit(void)
 {
     printk(KERN_DEBUG "<---- morse_code_driver_exit().\n");
 	misc_deregister(&mc_miscdevice);
+	led_unregister();
 }
 // Link our init/exit functions into the kernel's code.
 module_init(morse_code_driver_init);
