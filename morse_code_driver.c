@@ -1,7 +1,12 @@
-// TODO: Add explanation of the file here.
-
+/**
+ * This file is source code for a misc character kernel driver module. It creates a virtual file, called
+ * /dev/morse-code, which allows the user to write ASCII text to it and get the text translated into morse code, both in
+ * text form when reading the file, and also immediately in the form of being flashed out over an LED. Note that the
+ * the trigger for this LED must be set to morse-code before installing the kernel module. It's also expected that the
+ * LED is wired up with the breadboard.
+ */
 #include <linux/module.h>
-#include <linux/miscdevice.h>		// for misc-driver calls.
+#include <linux/miscdevice.h> // for misc-driver calls.
 #include <linux/fs.h>
 #include <linux/delay.h>
 #include <linux/uaccess.h>
@@ -31,7 +36,7 @@
 #define IS_WHITESPACE(ch) ((ch) == ' ' || (ch) == '\n' || (ch) == '\r' || (ch) == '\t')
 
 // This macro assumes that IS_LETTER(ch) == 1
-#define TO_LOWERCASE(ch) (((ch) >= 'a') ? (ch) : (ch) + 'a' - 'A');
+#define TO_LOWERCASE(ch) (((ch) >= 'a') ? (ch) : (ch) + 'a' - 'A')
 
 // This macro assumes that ch is a lowercase letter.
 #define MORSE_BITS_INDEX(ch) ((ch) - 'a')
@@ -86,13 +91,6 @@ static unsigned short morse_codes[] = {
 		0xEAE0,	// X 1110 1010 111
 		0xEBB8,	// Y 1110 1011 1011 1
 		0xEEA0	// Z 1110 1110 101
-};
-
-static char whitespaces[] = {
-	' ',
-	'\t',
-	'\r',
-	'\n'
 };
 
 static DECLARE_KFIFO(mc_fifo, char, MC_FIFO_MAX_SIZE);
@@ -162,16 +160,6 @@ static ssize_t mc_write(struct file *file, const char *buff, size_t count, loff_
 /******************************************************
  * Helper functions for callbacks
  ******************************************************/
-/// Returns 1 if char is a whitespace character and 0 otherwise.
-static int is_whitespace(char ch)
-{
-	int i;
-	for (i = 0; i < NUM_ELEMS(whitespaces); i++) {
-		if (whitespaces[i] == ch) return 1;
-	}
-	return 0;
-}
-
 /**
  * Set out_first and out_last to indicate a substring of src which has leading and trailing whitespace stripped off it.
  * @param src character buffer
@@ -187,7 +175,7 @@ static void strip_whitespace(const char* src, int len, int* out_first, int* out_
 	int last = len - 1;
 
 	// Find first.
-	for (; first <= last && is_whitespace(src[first]); first++);
+	for (; first <= last && IS_WHITESPACE(src[first]); first++);
 
 	// All characters are whitespace.
 	if (first == len) {
@@ -197,7 +185,7 @@ static void strip_whitespace(const char* src, int len, int* out_first, int* out_
 	}
 
 	// Find last.
-	for (; first < last && is_whitespace(src[last]); last--);
+	for (; first < last && IS_WHITESPACE(src[last]); last--);
 
 	*out_first = first;
 	*out_last = last;
@@ -289,7 +277,7 @@ static void put_newline(void)
 
 /**
  * Translate from ASCII to morse code and place result in mc_fifo. Returns 0 if no characters were processed due to
- * some error, and len otherwise.
+ * some error, and len otherwise. Also flashes LED accordingly.
  * @param src the ASCI buffer
  * @param len the number of characters in src
  */
@@ -302,6 +290,7 @@ static int to_morse(const char* src, int len)
 	char* substring = NULL;
 	size_t subsize = 0;
 	short num_consecutive_whitespaces = 0;
+	char printed_a_letter = 0;
 	if (len <= 0) {
 		printk(KERN_ERR "%s ERROR: Bad argument len == %d.\n", LOG_PREFIX, len);
 		return 0;
@@ -378,6 +367,7 @@ static int to_morse(const char* src, int len)
 							if (num_consecutive_zeros >= 2) {
 								if (i != last) {
 									put_space();
+									printed_a_letter = 1;
 								}
 							}
 							break;
@@ -409,9 +399,7 @@ static int to_morse(const char* src, int len)
 				put_word_sep();
 			}
 		}
-		// TODO: This condition means that if the last character is not a letter, no newline will be placed, which is
-		// not correct.
-		if ((i == last) && (IS_LETTER(ch) || IS_WHITESPACE(ch))) {
+		if (i == last && printed_a_letter) {
 			put_newline();
 		}
 	}
